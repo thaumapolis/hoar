@@ -1,5 +1,7 @@
 # hoar — breath on cold glass
 
+<!-- Front page image: docs/card.png -->
+
 A pane of cold glass with a thin film of water on it. Frost nucleates, grows, and
 competes for the cold. You breathe on it to melt it back.
 
