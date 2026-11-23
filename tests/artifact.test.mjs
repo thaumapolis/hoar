@@ -93,16 +93,34 @@ await test('breathing melts frost where it points', async () => {
     const { ctx, page, errors } = await openPage(b, { width: 1280, height: 800 }, {});
     const box = await page.locator('#c').boundingBox();
 
+    // Sample where the ice actually is, and breathe there. Sampling the pane centre
+    // failed for the wrong reason: a diagnostic read showed the centre was already
+    // liquid (phi = -1), so the test was measuring frost growing into open glass and
+    // calling it "breath did nothing". Ask the simulation for an icy cell instead.
     const PATCH = 0.05;
-    const patch = () => page.evaluate((R) => {
+    const aim = () => page.evaluate(() => {
+      const w = window.__hoar.app().world;
+      // Deterministic pick: the first sufficiently-solid cell in a spiral from the
+      // middle, so the sample point is a property of the state, not of a random draw.
+      const cx0 = Math.floor(w.W / 2), cy0 = Math.floor(w.H / 2);
+      for (let rad = 0; rad < Math.max(w.W, w.H); rad += 6) {
+        for (let a = 0; a < 36; a++) {
+          const x = Math.round(cx0 + rad * Math.cos((a * Math.PI) / 18));
+          const y = Math.round(cy0 + rad * Math.sin((a * Math.PI) / 18));
+          if (x < 10 || y < 10 || x >= w.W - 10 || y >= w.H - 10) continue;
+          if (w.phi[y * w.W + x] > 0.8) return { x, y, w: w.W, h: w.H };
+        }
+      }
+      return null;
+    });
+    const patchAt = (pt) => page.evaluate(({ x, y, R }) => {
       const c = document.getElementById('c');
-      const cx = Math.floor(c.width * 0.5), cy = Math.floor(c.height * 0.5);
       const r = Math.floor(c.width * R);
-      const d = c.getContext('2d').getImageData(cx - r, cy - r, 2 * r, 2 * r).data;
+      const d = c.getContext('2d').getImageData(x - r, y - r, 2 * r, 2 * r).data;
       let bright = 0;
       for (let k = 0; k < d.length; k += 4) if (d[k] > 140 && d[k + 2] > 150) bright++;
       return bright / (d.length / 4);
-    }, PATCH);
+    }, { x: pt.x, y: pt.y, R: PATCH });
 
     // Grow frost to a known-covered state first, by seeding until the centre region is
     // icy, rather than waiting a fixed time. A fixed wait made this test depend on how
@@ -116,22 +134,35 @@ await test('breathing melts frost where it points', async () => {
     }
     assert.ok(await cover() >= 40, 'could not reach a covered pane; coverage ' + await cover());
 
-    let before = await patch();
-    guard = 0;
-    while (before < 0.15 && guard++ < 15) {
-      await page.waitForTimeout(600);
-      before = await patch();
-    }
-    assert.ok(before >= 0.15, 'patch never froze: ' + before.toFixed(3));
+    const pt = await aim();
+    assert.ok(pt, 'no solid ice anywhere to aim at');
+    // Map simulation coordinates onto the canvas element for pointer input.
+    const box2 = await page.locator('#c').boundingBox();
+    const sx = box2.x + (pt.x / pt.w) * box2.width;
+    const sy = box2.y + (pt.y / pt.h) * box2.height;
 
-    // Hold breath over the patch until it measurably melts.
-    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
+    let before = await patchAt(pt);
+    guard = 0;
+    while (before < 0.2 && guard++ < 15) {
+      await page.waitForTimeout(500);
+      before = await patchAt(pt);
+    }
+    assert.ok(before >= 0.2, 'patch never froze enough to melt: ' + before.toFixed(3));
+
+    // Hold breath over the patch until it measurably melts. Melting is not instant:
+    // the held breath first has to refill the patch with warm water against diffusion
+    // from the surrounding cold, and only then does the ice retreat. Measured in the
+    // model at these settings, coverage falls from 0.306 to 0.222 over ~300 steps, so
+    // a short dwell sees growth and nothing else. Iterate until it works or the budget
+    // runs out, so the failure message says "never melted" rather than looking like a
+    // flaky pixel count.
+    await page.mouse.move(sx, sy);
     await page.mouse.down();
     let after = before;
-    for (let i = 0; i < 25 && after >= before; i++) {
-      await page.mouse.move(box.x + box.width * (0.5 + 0.003 * Math.sin(i)), box.y + box.height * 0.5);
-      await page.waitForTimeout(120);
-      after = await patch();
+    for (let i = 0; i < 90 && after >= before; i++) {
+      await page.mouse.move(sx + 0.5 * Math.sin(i), sy);
+      await page.waitForTimeout(80);
+      after = await patchAt(pt);
     }
     await page.mouse.up();
     assert.ok(after < before,

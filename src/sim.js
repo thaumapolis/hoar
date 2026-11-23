@@ -124,8 +124,15 @@ export function seedCrystal(w, cx, cy, radius) {
   if (!(cx >= 0 && cx < W && cy >= 0 && cy < H)) {
     throw new Error('seed centre outside the field: ' + cx + ',' + cy);
   }
-  for (let j = 0; j < H; j++) {
-    for (let i = 0; i < W; i++) {
+  // Only the seed's own neighbourhood can change: tanh saturates a few interface
+  // widths out, so scanning the whole field per nucleus made seeding O(nuclei x n).
+  // At ~1000 nuclei on a 1200x750 grid that was 6 s of blocked startup, and it also
+  // made the "New crystal" button hesitate.
+  const reach = radius + 8;
+  const i0 = Math.max(0, Math.floor(cx - reach)), i1 = Math.min(W - 1, Math.ceil(cx + reach));
+  const j0 = Math.max(0, Math.floor(cy - reach)), j1 = Math.min(H - 1, Math.ceil(cy + reach));
+  for (let j = j0; j <= j1; j++) {
+    for (let i = i0; i <= i1; i++) {
       const d = Math.hypot(i - cx, j - cy);
       const t = Math.tanh((radius - d) / 1.2);
       const k = j * W + i;

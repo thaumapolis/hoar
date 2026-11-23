@@ -41,8 +41,14 @@ ${(html.match(/<body>([\s\S]*?)<script/)[1]).trim()}
 'use strict';
 ${sim}
 ${app}
-window.__hoar = { createWorld, step, seedCrystal, breathPatch, chill, solidFraction, meanUndercooling };
-mount({
+// Diagnostic handle: physics entry points plus a live read of the running pane, so a
+// test can tell "the mechanic is not applied" from "the mechanic is too weak" instead
+// of inferring it from pixels.
+window.__hoar = {
+  createWorld, step, seedCrystal, breathPatch, chill, solidFraction, meanUndercooling,
+  app: function () { return __app; },
+};
+const __app = mount({
   canvas: document.getElementById('c'),
   btnBreath: document.getElementById('breath'),
   btnSeed: document.getElementById('seed'),

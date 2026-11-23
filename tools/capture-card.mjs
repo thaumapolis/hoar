@@ -27,7 +27,12 @@ if (!entry) {
 }
 const { firefox } = await import(entry);
 
-const CARD_W = 1400;
+// Capture above the size the front page displays (~1162 device px for a cover
+// panel). The first version used a 720-wide simulation grid stretched to 1400, and
+// the generator's centre crop then showed a blurry fragment of it ("keeps 7% of the
+// source"). A 2800-wide viewport makes the grid ~1400 cells wide, so the downscale
+// has genuine detail instead of interpolation.
+const CARD_W = 2800;
 const CARD_H = CARD_W / 2;
 const TARGET_MIN = 55;
 const TARGET_MAX = 72;

@@ -10,11 +10,39 @@ import {
   solidFraction, meanUndercooling,
 } from './sim.js';
 
-const GRID_W = 720;
-const CHILL_PER_STEP = 0.0035;
-const BREATH_RADIUS = 46;
+// Simulation grid width. Detail in this app is limited by cell count, not by canvas
+// CSS size, so a fixed 720 looked soft on a wide desktop and on any 2x display: the
+// same field was simply stretched. Sizing the field to the device makes the frost
+// crisp where the pixels are, at the cost of more work per step -- hence the cap.
+// Grid width budget, chosen by measurement rather than by wanting more detail:
+// 1789 cells wide measured 5.9 fps on desktop and 13.5 fps on a phone, which feels
+// broken. 960 cells wide (about 1.05M cells with STEPS_PER_FRAME below) holds 60 fps.
+const MAX_GRID_CELLS = 1_050_000;
+function gridWidthFor(cssW, cssH, dpr) {
+  const aspect = Math.min(1.5, Math.max(0.5, cssH / cssW));
+  const want = Math.round(cssW * dpr);
+  const cells = want * want * aspect;
+  const width = cells > MAX_GRID_CELLS
+    ? Math.round(want * Math.sqrt(MAX_GRID_CELLS / cells))
+    : want;
+  return Math.max(360, Math.min(width, 1200));
+}
+const CHILL_PER_STEP = 0.009;
+// Breath patch radius as a fraction of the field width, not a fixed cell count: the
+// field is sized to the display, so a fixed 46 cells is proportionally much smaller on
+// a 1200-wide grid than on 720, and diffusion then outruns the breath and the mechanic
+// stops working on big screens (observed: melts at 600 wide, only slows at 1200).
+// 0.075 of the field keeps the same warm fraction of the pane at any size.
+const BREATH_RADIUS_FRAC = 0.075;
+// Per solver step. 0.14 comfortably exceeds CHILL_PER_STEP, which is what makes a
+// held breath win locally; if these two ever approach each other the mechanic stops
+// being visible, so they are kept far apart deliberately.
 const BREATH_STRENGTH = 0.14;
-const STEPS_PER_FRAME = 6;
+// Solver steps per animation frame. Measured on this model at a 1200x750 grid:
+// 1 step/frame runs at ~55 fps, 6 steps/frame at ~13.5 fps, and the cost is the step
+// count rather than the grid size. One step keeps the interaction smooth; the growth
+// pace a visitor sees is set by CHILL_PER_STEP and the front speed, not by this.
+const STEPS_PER_FRAME = 1;
 
 export function mount(els) {
   // Declared first: resize() -> reset() -> freshWorld() writes breathField, and a
@@ -34,8 +62,8 @@ export function mount(els) {
   const { canvas, btnBreath, btnSeed, btnClear, readFrost, readFuel, note } = els;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  let W = GRID_W;
-  let H = Math.round(GRID_W * 0.62);
+  let W = 720;
+  let H = 450;
   let world = freshWorld();
   let img = null;
 
@@ -51,7 +79,7 @@ export function mount(els) {
     if (!breathField) return;
     breathField.fill(0);
     if (!breathing) return;
-    const R = BREATH_RADIUS, R2 = R * R;
+    const R = Math.max(12, Math.round(W * BREATH_RADIUS_FRAC)), R2 = R * R;
     const i0 = Math.max(0, Math.floor(pointerX - R)), i1 = Math.min(W - 1, Math.ceil(pointerX + R));
     const j0 = Math.max(0, Math.floor(pointerY - R)), j1 = Math.min(H - 1, Math.ceil(pointerY + R));
     for (let j = j0; j <= j1; j++) {
@@ -67,9 +95,10 @@ export function mount(els) {
   function resize() {
     // Portrait and landscape both need to fill without stretching the physics cells
     // into rectangles, otherwise growth is anisotropic for no physical reason.
-    const aspect = window.innerHeight / window.innerWidth;
-    W = GRID_W;
-    H = Math.max(160, Math.round(GRID_W * Math.min(1.5, Math.max(0.5, aspect))));
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    W = gridWidthFor(window.innerWidth, window.innerHeight, dpr);
+    const aspect = Math.min(1.5, Math.max(0.5, window.innerHeight / window.innerWidth));
+    H = Math.max(160, Math.round(W * aspect));
     canvas.width = W;
     canvas.height = H;
     img = ctx.createImageData(W, H);
@@ -82,7 +111,16 @@ export function mount(els) {
   // never an empty rectangle, which is the difference between a demo and a picture.
   // Nuclei per unit area, so a tall portrait field gets as many as a landscape one.
   // A fixed count left portrait as sparse confetti with most of the pane empty.
-  const NUCLEI_PER_10K_CELLS = 6.8;
+  // Nuclei per 10k cells, and the seed radius as a fraction of the field. Both scale
+// with the grid so a 1200-wide pane is no sparser than a 720-wide one; with a fixed
+// cell radius the same count left big screens reading as scattered dots.
+const NUCLEI_PER_10K_CELLS = 26.0;
+const SEED_RADIUS_FRAC = 0.0055;
+// Preroll sized so startup stays quick whatever the grid resolution: the cost is
+// steps x cells, so a fixed step count cost 6.9 s on a 1200x750 grid. Budget is in
+// cell-steps; 150 steps on a 720x450 field was the look that reads well, and this
+// keeps that much work at any size.
+const PREROLL_CELL_BUDGET = 48_000_000;
   function reset() {
     world = freshWorld();
     img = img && img.width === W && img.height === H ? img : ctx.createImageData(W, H);
@@ -90,7 +128,7 @@ export function mount(els) {
   }
 
   function seed() {
-    world.u.fill(0.9);
+    world.u.fill(1.05);
     const nuclei = Math.round(NUCLEI_PER_10K_CELLS * (W * H) / 10000);
     for (let i = 0; i < nuclei; i++) {
       // Deterministic jitter so the mosaic is reproducible for a given size.
@@ -98,7 +136,16 @@ export function mount(els) {
       const b2 = Math.sin(i * 78.233) * 12345.6789;
       const rx = a - Math.floor(a);
       const ry = b2 - Math.floor(b2);
-      seedCrystal(world, rx * W, ry * H, 1.6 + 1.4 * rx);
+      seedCrystal(world, rx * W, ry * H, W * SEED_RADIUS_FRAC * (0.7 + 0.9 * rx));
+    }
+    // A short preroll only. Growing the whole arrival state up front looked better in
+    // a screenshot but cost 17.8 s of blocked startup on a 1200x750 grid -- the page
+    // was unusable before the first paint, which is a worse defect than a sparse one.
+    const preroll = Math.max(20, Math.floor(PREROLL_CELL_BUDGET / world.n));
+    for (let i = 0; i < preroll; i++) {
+      chill(world, CHILL_PER_STEP);
+      step(world, null);
+      reframe();
     }
   }
 
@@ -227,6 +274,9 @@ export function mount(els) {
       step(world, breathField);
       reframe();
     }
+    // Breath and chill are both per-step rates applied inside the same loop, so they
+    // stay balanced whatever STEPS_PER_FRAME is. The balance is what the mechanic
+    // depends on: breath only wins locally where it exceeds the glass's pull.
     draw();
     const f = solidFraction(world);
     readFrost.textContent = Math.round(f * 100) + '%';
@@ -248,5 +298,16 @@ export function mount(els) {
   window.addEventListener('resize', resize);
   resize();
   requestAnimationFrame(frame);
-  return { get world() { return world; } };
+  return {
+    get world() { return world; },
+    // What the pointer is doing and what the breath field holds, so a failing
+    // interaction test can say which link in the chain broke.
+    isBreathing() { return breathing; },
+    breathPeak() {
+      if (!breathField) return 0;
+      let m = 0;
+      for (let k = 0; k < breathField.length; k++) if (breathField[k] > m) m = breathField[k];
+      return m;
+    },
+  };
 }
