@@ -78,6 +78,13 @@ undercooling remaining, as a percentage of the coldest the film gets.
 
 ## Running it
 
+**▶ [Play it now](https://raw.githack.com/thaumapolis/hoar/main/index.html)** — no install, no network, nothing to build.
+
+*About that link: it is served by [raw.githack.com](https://raw.githack.com), which
+forwards the file straight from GitHub. Once it has loaded, the page makes no further
+requests — the showcase's offline proof loads it in a browser, blocks every request the
+page tries to make, and reports from inside that nothing was needed.*
+
 Open `index.html` in a browser. It is one file with no dependencies: no network, no
 build step needed to view it, no storage, and it works inside a sandboxed
 opaque-origin iframe.
