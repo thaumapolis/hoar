@@ -57,5 +57,6 @@ mount({
 </html>
 `;
 
-writeFileSync(join(root, 'index.html'), bundle);
-console.log('wrote index.html', bundle.length, 'bytes');
+const out = process.argv[2] || join(root, 'index.html');
+writeFileSync(out, bundle);
+console.log('wrote', out, bundle.length, 'bytes');
