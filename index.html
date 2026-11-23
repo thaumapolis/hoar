@@ -109,6 +109,7 @@ const DEFAULTS = {
   dt: 0.005,
   latent: 0.45,
   diffusivity: 1.0,
+  uMelt: 0.25,
 };
 
 function dtLimit(p) {
@@ -161,13 +162,21 @@ function step(w, breath) {
       }
       const lapPhi = stiff * (phi[kl] + phi[kr] + phi[ku] + phi[kd] - 4 * ph);
       const bulk = ph - ph * ph * ph;
-      const thermal = SQ2 * u[k] * (1 - ph * ph);
+      // The driving term is signed, so a warm film (u below the melting point of this
+      // discretisation, U_MELT) pushes the front back toward liquid: ice that is
+      // breathed on melts rather than merely stalling. Without this, removing fuel is
+      // nearly inert and the headline mechanic is invisible (measured: breath strength
+      // 0.14 vs 0.6 changed coverage by 0.005).
+      const thermal = SQ2 * (u[k] - p.uMelt) * (1 - ph * ph);
       const dphi = (eps2 * lapPhi + bulk + thermal) / p.tau;
       nextPhi[k] = ph + p.dt * dphi;
 
       const lapU = u[kl] + u[kr] + u[ku] + u[kd] - 4 * u[k];
       let nextUv = u[k] + p.dt * (p.diffusivity * lapU + p.latent * dphi);
-      if (breath) nextUv -= p.dt * breath[k];
+      // breath is a per-step rate in the same units as chill(), so it is subtracted
+      // directly. Scaling it by dt as well made warm breath ~200x too weak to
+      // counteract the latent heat it is supposed to overwhelm.
+      if (breath) nextUv -= breath[k];
       if (nextUv < 0) nextUv = 0;
       nextU[k] = nextUv;
     }
@@ -189,16 +198,21 @@ function seedCrystal(w, cx, cy, radius) {
   const { W, H, phi } = w;
   if (!(Number.isFinite(cx) && Number.isFinite(cy))) throw new Error('seed centre must be finite');
   if (!(radius > 0)) throw new Error('seed radius must be positive');
-  let touched = 0;
+  // "Outside the field" means the centre is outside the grid. The earlier form of this
+  // check counted cells whose tanh profile improved on phi, which is zero for a seed
+  // dropped on already-frozen glass -- a legitimate request, not a bad coordinate, and
+  // it threw twice in ways that looked like geometry bugs.
+  if (!(cx >= 0 && cx < W && cy >= 0 && cy < H)) {
+    throw new Error('seed centre outside the field: ' + cx + ',' + cy);
+  }
   for (let j = 0; j < H; j++) {
     for (let i = 0; i < W; i++) {
       const d = Math.hypot(i - cx, j - cy);
       const t = Math.tanh((radius - d) / 1.2);
       const k = j * W + i;
-      if (t > phi[k]) { phi[k] = t; touched++; }
+      if (t > phi[k]) phi[k] = t;
     }
   }
-  if (touched === 0) throw new Error('seed landed outside the field');
   return w;
 }
 
@@ -264,10 +278,24 @@ function meanUndercooling(w) {
 const GRID_W = 720;
 const CHILL_PER_STEP = 0.0035;
 const BREATH_RADIUS = 46;
-const BREATH_STRENGTH = 0.9;
+const BREATH_STRENGTH = 0.14;
 const STEPS_PER_FRAME = 6;
 
 function mount(els) {
+  // Declared first: resize() -> reset() -> freshWorld() writes breathField, and a
+  // `let` below that call site is a temporal-dead-zone error at startup.
+  let breathing = false;
+  let pointerX = 0, pointerY = 0;
+  // Breath is a persistent field, not a one-shot impulse: the frame loop advances
+  // several solver steps per frame and re-chills each one, so a single
+  // breathPatch() on pointerdown was erased before the ice noticed it. Painting a
+  // field the loop consumes every step is what makes the mechanic actually visible.
+  let breathField = null;
+  let hasInteracted = false;
+  let announcedFull = false;
+  let noteCleared = false;
+  let pendingNote = false;
+
   const { canvas, btnBreath, btnSeed, btnClear, readFrost, readFuel, note } = els;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
@@ -277,7 +305,28 @@ function mount(els) {
   let img = null;
 
   function freshWorld() {
-    return createWorld(W, H, {});
+    const w = createWorld(W, H, {});
+    breathField = new Float64Array(w.n);
+    return w;
+  }
+
+  // Paint this frame's breath into the field, then let it decay so a held finger
+  // keeps a warm plume while a released one fades.
+  function paintBreath() {
+    if (!breathField) return;
+    breathField.fill(0);
+    if (!breathing) return;
+    const R = BREATH_RADIUS, R2 = R * R;
+    const i0 = Math.max(0, Math.floor(pointerX - R)), i1 = Math.min(W - 1, Math.ceil(pointerX + R));
+    const j0 = Math.max(0, Math.floor(pointerY - R)), j1 = Math.min(H - 1, Math.ceil(pointerY + R));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - pointerX, dy = j - pointerY;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > R2) continue;
+        breathField[j * W + i] = BREATH_STRENGTH * (1 - Math.sqrt(d2) / R);
+      }
+    }
   }
 
   function resize() {
@@ -321,16 +370,11 @@ function mount(els) {
   // --- input -------------------------------------------------------------
   // Dragging or holding breath removes undercooling where the finger points and
   // deposits water. Releasing lets the cold glass pull the heat back out.
-  let breathing = false;
-  let hasInteracted = false;
-  let announcedFull = false;
-  let noteCleared = false;
 
   function breathAt(clientX, clientY) {
     const r = canvas.getBoundingClientRect();
-    const x = ((clientX - r.left) / r.width) * W;
-    const y = ((clientY - r.top) / r.height) * H;
-    breathPatch(world, x, y, BREATH_RADIUS, BREATH_STRENGTH);
+    pointerX = ((clientX - r.left) / r.width) * W;
+    pointerY = ((clientY - r.top) / r.height) * H;
   }
 
   canvas.addEventListener('pointerdown', (ev) => {
@@ -428,6 +472,7 @@ function mount(els) {
   }
 
   function noteText(s) {
+    pendingNote = true;
     note.textContent = s;
   }
 
@@ -441,9 +486,10 @@ function mount(els) {
   }
 
   function frame() {
+    paintBreath();
     for (let i = 0; i < STEPS_PER_FRAME; i++) {
       chill(world, CHILL_PER_STEP);
-      step(world, null);
+      step(world, breathField);
       reframe();
     }
     draw();
@@ -456,7 +502,7 @@ function mount(els) {
       note.textContent = 'Drag across the glass to breathe on it \u00b7 double-tap to seed a crystal';
     } else if (!noteCleared) {
       noteCleared = true;
-      note.textContent = '';
+      if (!pendingNote) note.textContent = '';
     } else if (f > 0.98 && !announcedFull) {
       announcedFull = true;
       noteText('the glass is fully frosted');

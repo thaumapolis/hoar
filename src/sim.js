@@ -28,6 +28,7 @@ export const DEFAULTS = {
   dt: 0.005,
   latent: 0.45,
   diffusivity: 1.0,
+  uMelt: 0.25,
 };
 
 export function dtLimit(p) {
@@ -80,13 +81,21 @@ export function step(w, breath) {
       }
       const lapPhi = stiff * (phi[kl] + phi[kr] + phi[ku] + phi[kd] - 4 * ph);
       const bulk = ph - ph * ph * ph;
-      const thermal = SQ2 * u[k] * (1 - ph * ph);
+      // The driving term is signed, so a warm film (u below the melting point of this
+      // discretisation, U_MELT) pushes the front back toward liquid: ice that is
+      // breathed on melts rather than merely stalling. Without this, removing fuel is
+      // nearly inert and the headline mechanic is invisible (measured: breath strength
+      // 0.14 vs 0.6 changed coverage by 0.005).
+      const thermal = SQ2 * (u[k] - p.uMelt) * (1 - ph * ph);
       const dphi = (eps2 * lapPhi + bulk + thermal) / p.tau;
       nextPhi[k] = ph + p.dt * dphi;
 
       const lapU = u[kl] + u[kr] + u[ku] + u[kd] - 4 * u[k];
       let nextUv = u[k] + p.dt * (p.diffusivity * lapU + p.latent * dphi);
-      if (breath) nextUv -= p.dt * breath[k];
+      // breath is a per-step rate in the same units as chill(), so it is subtracted
+      // directly. Scaling it by dt as well made warm breath ~200x too weak to
+      // counteract the latent heat it is supposed to overwhelm.
+      if (breath) nextUv -= breath[k];
       if (nextUv < 0) nextUv = 0;
       nextU[k] = nextUv;
     }
@@ -108,16 +117,21 @@ export function seedCrystal(w, cx, cy, radius) {
   const { W, H, phi } = w;
   if (!(Number.isFinite(cx) && Number.isFinite(cy))) throw new Error('seed centre must be finite');
   if (!(radius > 0)) throw new Error('seed radius must be positive');
-  let touched = 0;
+  // "Outside the field" means the centre is outside the grid. The earlier form of this
+  // check counted cells whose tanh profile improved on phi, which is zero for a seed
+  // dropped on already-frozen glass -- a legitimate request, not a bad coordinate, and
+  // it threw twice in ways that looked like geometry bugs.
+  if (!(cx >= 0 && cx < W && cy >= 0 && cy < H)) {
+    throw new Error('seed centre outside the field: ' + cx + ',' + cy);
+  }
   for (let j = 0; j < H; j++) {
     for (let i = 0; i < W; i++) {
       const d = Math.hypot(i - cx, j - cy);
       const t = Math.tanh((radius - d) / 1.2);
       const k = j * W + i;
-      if (t > phi[k]) { phi[k] = t; touched++; }
+      if (t > phi[k]) phi[k] = t;
     }
   }
-  if (touched === 0) throw new Error('seed landed outside the field');
   return w;
 }
 

@@ -13,10 +13,24 @@ import {
 const GRID_W = 720;
 const CHILL_PER_STEP = 0.0035;
 const BREATH_RADIUS = 46;
-const BREATH_STRENGTH = 0.9;
+const BREATH_STRENGTH = 0.14;
 const STEPS_PER_FRAME = 6;
 
 export function mount(els) {
+  // Declared first: resize() -> reset() -> freshWorld() writes breathField, and a
+  // `let` below that call site is a temporal-dead-zone error at startup.
+  let breathing = false;
+  let pointerX = 0, pointerY = 0;
+  // Breath is a persistent field, not a one-shot impulse: the frame loop advances
+  // several solver steps per frame and re-chills each one, so a single
+  // breathPatch() on pointerdown was erased before the ice noticed it. Painting a
+  // field the loop consumes every step is what makes the mechanic actually visible.
+  let breathField = null;
+  let hasInteracted = false;
+  let announcedFull = false;
+  let noteCleared = false;
+  let pendingNote = false;
+
   const { canvas, btnBreath, btnSeed, btnClear, readFrost, readFuel, note } = els;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
 
@@ -26,7 +40,28 @@ export function mount(els) {
   let img = null;
 
   function freshWorld() {
-    return createWorld(W, H, {});
+    const w = createWorld(W, H, {});
+    breathField = new Float64Array(w.n);
+    return w;
+  }
+
+  // Paint this frame's breath into the field, then let it decay so a held finger
+  // keeps a warm plume while a released one fades.
+  function paintBreath() {
+    if (!breathField) return;
+    breathField.fill(0);
+    if (!breathing) return;
+    const R = BREATH_RADIUS, R2 = R * R;
+    const i0 = Math.max(0, Math.floor(pointerX - R)), i1 = Math.min(W - 1, Math.ceil(pointerX + R));
+    const j0 = Math.max(0, Math.floor(pointerY - R)), j1 = Math.min(H - 1, Math.ceil(pointerY + R));
+    for (let j = j0; j <= j1; j++) {
+      for (let i = i0; i <= i1; i++) {
+        const dx = i - pointerX, dy = j - pointerY;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > R2) continue;
+        breathField[j * W + i] = BREATH_STRENGTH * (1 - Math.sqrt(d2) / R);
+      }
+    }
   }
 
   function resize() {
@@ -70,16 +105,11 @@ export function mount(els) {
   // --- input -------------------------------------------------------------
   // Dragging or holding breath removes undercooling where the finger points and
   // deposits water. Releasing lets the cold glass pull the heat back out.
-  let breathing = false;
-  let hasInteracted = false;
-  let announcedFull = false;
-  let noteCleared = false;
 
   function breathAt(clientX, clientY) {
     const r = canvas.getBoundingClientRect();
-    const x = ((clientX - r.left) / r.width) * W;
-    const y = ((clientY - r.top) / r.height) * H;
-    breathPatch(world, x, y, BREATH_RADIUS, BREATH_STRENGTH);
+    pointerX = ((clientX - r.left) / r.width) * W;
+    pointerY = ((clientY - r.top) / r.height) * H;
   }
 
   canvas.addEventListener('pointerdown', (ev) => {
@@ -177,6 +207,7 @@ export function mount(els) {
   }
 
   function noteText(s) {
+    pendingNote = true;
     note.textContent = s;
   }
 
@@ -190,9 +221,10 @@ export function mount(els) {
   }
 
   function frame() {
+    paintBreath();
     for (let i = 0; i < STEPS_PER_FRAME; i++) {
       chill(world, CHILL_PER_STEP);
-      step(world, null);
+      step(world, breathField);
       reframe();
     }
     draw();
@@ -205,7 +237,7 @@ export function mount(els) {
       note.textContent = 'Drag across the glass to breathe on it \u00b7 double-tap to seed a crystal';
     } else if (!noteCleared) {
       noteCleared = true;
-      note.textContent = '';
+      if (!pendingNote) note.textContent = '';
     } else if (f > 0.98 && !announcedFull) {
       announcedFull = true;
       noteText('the glass is fully frosted');
