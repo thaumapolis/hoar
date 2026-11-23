@@ -88,50 +88,56 @@ await test('controls work: wipe resets, seed and breathe do not throw', async ()
   });
 });
 
-await test('dragging on the glass removes frost where it points', async () => {
+await test('breathing melts frost where it points', async () => {
   await withBrowser(async (b) => {
     const { ctx, page, errors } = await openPage(b, { width: 1280, height: 800 }, {});
-    await page.waitForTimeout(2200);
     const box = await page.locator('#c').boundingBox();
-    const sample = () => page.evaluate(() => {
-      const c = document.getElementById('c');
-      const d = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
-      // Bright ice count: ice is the light part of the image.
-      let bright = 0;
-      for (let k = 0; k < d.length; k += 4) if (d[k] > 140 && d[k + 2] > 150) bright++;
-      return bright;
-    });
-    // Measure only the strip the pointer traverses. A whole-canvas count is
-    // confounded by frost advancing everywhere else at the same time, which made this
-    // assertion fail for a reason unrelated to the breath mechanic.
-    const PATCH = 0.055;
+
+    const PATCH = 0.05;
     const patch = () => page.evaluate((R) => {
       const c = document.getElementById('c');
-      const cx = Math.floor(c.width * 0.72), cy = Math.floor(c.height * 0.5);
+      const cx = Math.floor(c.width * 0.5), cy = Math.floor(c.height * 0.5);
       const r = Math.floor(c.width * R);
       const d = c.getContext('2d').getImageData(cx - r, cy - r, 2 * r, 2 * r).data;
       let bright = 0;
       for (let k = 0; k < d.length; k += 4) if (d[k] > 140 && d[k + 2] > 150) bright++;
       return bright / (d.length / 4);
     }, PATCH);
-    // Measure the small disc the pointer dwells in, not a wide strip: a breath patch
-    // is ~13% of the pane, and averaging it against a pane that is still freezing
-    // everywhere else hid a mechanic that works (confirmed by field probes: u at the
-    // patch centre goes 1.1 -> 0 and phi melts back).
-    const before = await patch();
-    // Hold over the patch centre so breath is applied for a full second of steps.
-    await page.mouse.move(box.x + box.width * 0.72, box.y + box.height * 0.5);
+
+    // Grow frost to a known-covered state first, by seeding until the centre region is
+    // icy, rather than waiting a fixed time. A fixed wait made this test depend on how
+    // fast the machine renders: CI sampled before the front reached the patch and the
+    // assertion compared "not yet frozen" against "slightly frozen" (0.084 -> 0.091).
+    const cover = () => page.evaluate(() => parseFloat(document.getElementById('frost').textContent));
+    let guard = 0;
+    while ((await cover()) < 40 && guard++ < 30) {
+      await page.locator('#seed').click();
+      await page.waitForTimeout(400);
+    }
+    assert.ok(await cover() >= 40, 'could not reach a covered pane; coverage ' + await cover());
+
+    let before = await patch();
+    guard = 0;
+    while (before < 0.15 && guard++ < 15) {
+      await page.waitForTimeout(600);
+      before = await patch();
+    }
+    assert.ok(before >= 0.15, 'patch never froze: ' + before.toFixed(3));
+
+    // Hold breath over the patch until it measurably melts.
+    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.5);
     await page.mouse.down();
-    for (let i = 0; i < 20; i++) {
-      await page.mouse.move(box.x + box.width * (0.72 + 0.004 * Math.sin(i)), box.y + box.height * 0.5);
-      await page.waitForTimeout(60);
+    let after = before;
+    for (let i = 0; i < 25 && after >= before; i++) {
+      await page.mouse.move(box.x + box.width * (0.5 + 0.003 * Math.sin(i)), box.y + box.height * 0.5);
+      await page.waitForTimeout(120);
+      after = await patch();
     }
     await page.mouse.up();
-    const after = await patch();
     assert.ok(after < before,
-      'breathing left the frost unchanged in the traversed strip: ' +
+      'breathing did not melt the frost under the pointer: ' +
       before.toFixed(3) + ' -> ' + after.toFixed(3));
-    assertNoErrors(errors, 'drag');
+    assertNoErrors(errors, 'breath');
     await ctx.close();
   });
 });
