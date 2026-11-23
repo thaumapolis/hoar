@@ -14,7 +14,7 @@ const GRID_W = 720;
 const CHILL_PER_STEP = 0.0035;
 const BREATH_RADIUS = 46;
 const BREATH_STRENGTH = 0.9;
-const STEPS_PER_FRAME = 3;
+const STEPS_PER_FRAME = 6;
 
 export function mount(els) {
   const { canvas, btnBreath, btnSeed, btnClear, readFrost, readFuel, note } = els;
@@ -37,9 +37,8 @@ export function mount(els) {
     H = Math.max(160, Math.round(GRID_W * Math.min(1.5, Math.max(0.5, aspect))));
     canvas.width = W;
     canvas.height = H;
-    world = freshWorld();
     img = ctx.createImageData(W, H);
-    prime();
+    reset();
   }
 
   // Start with frost already growing from many nuclei. Dense seeding is what turns
@@ -49,8 +48,14 @@ export function mount(els) {
   // Nuclei per unit area, so a tall portrait field gets as many as a landscape one.
   // A fixed count left portrait as sparse confetti with most of the pane empty.
   const NUCLEI_PER_10K_CELLS = 6.8;
-  function prime() {
-    world.u.fill(0.75);
+  function reset() {
+    world = freshWorld();
+    img = img && img.width === W && img.height === H ? img : ctx.createImageData(W, H);
+    seed();
+  }
+
+  function seed() {
+    world.u.fill(0.9);
     const nuclei = Math.round(NUCLEI_PER_10K_CELLS * (W * H) / 10000);
     for (let i = 0; i < nuclei; i++) {
       // Deterministic jitter so the mosaic is reproducible for a given size.
@@ -108,10 +113,22 @@ export function mount(els) {
   });
   btnSeed.addEventListener('click', () => {
     hasInteracted = true;
-    seedCrystal(world, W * (0.2 + 0.6 * Math.random()), H * (0.2 + 0.6 * Math.random()), 2.5);
+    // Try a few spots: on a pane that is nearly all ice there may be no open glass
+    // left, and a button that does nothing is worse than one that says so.
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const cx = W * (0.08 + 0.84 * Math.random());
+      const cy = H * (0.08 + 0.84 * Math.random());
+      if (world.phi[Math.floor(cy) * W + Math.floor(cx)] < 0.2) {
+        seedCrystal(world, cx, cy, 2.5);
+        noteText('new crystal started where the glass was still clear');
+        return;
+      }
+    }
+    noteText('no clear glass left to seed \u2014 wipe first');
   });
   btnClear.addEventListener('click', () => {
-    hasInteracted = true; announcedFull = false; prime(); noteText('wiped clean \u2014 the glass is clearing'); });
+    hasInteracted = true; announcedFull = false; reset();
+    noteText('wiped clean \u2014 the glass is clearing'); });
 
   // --- render ------------------------------------------------------------
   // Frost is drawn as ice over cold glass. The undercooling field is shown as a
@@ -161,7 +178,6 @@ export function mount(els) {
 
   function noteText(s) {
     note.textContent = s;
-    lastNoteAt = performance.now();
   }
 
   // Undercooling is capped: unbounded chill outran growth and the pane just got
