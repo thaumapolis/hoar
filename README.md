@@ -80,7 +80,7 @@ undercooling remaining, as a percentage of the coldest the film gets.
 
 ## Running it
 
-**▶ [Play it now](https://raw.githack.com/thaumapolis/hoar/main/index.html)** — no install, no network, nothing to build.
+**▶ [Play it now](https://raw.githack.com/thaumapolis/hoar/master/index.html)** — no install, no network, nothing to build.
 
 *About that link: it is served by [raw.githack.com](https://raw.githack.com), which
 forwards the file straight from GitHub. Once it has loaded, the page makes no further
